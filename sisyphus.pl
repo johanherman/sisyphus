@@ -367,6 +367,10 @@ open(my $scriptFh, '>', "$rfPath/sisyphus.sh") or die "Failed to create '$rfPath
 print $scriptFh <<EOF;
 #!/bin/bash
 
+# Setup some basic mechanisms for more defensive bash scripting. 
+set -o pipefail
+set -o nounset 
+
 PATH="$FindBin::Bin:$config->{CASAVA}:\$PATH"
 
 check_errs()

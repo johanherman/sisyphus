@@ -54,6 +54,12 @@ NGI_PROJECT: a2014205
 # Change to 1 to process with NGI-pipeline
 NGI_PROCESSING: 0 
 
+# Change to 0 to process on UPPMAX instead. 
+LOCAL_PROCESSING: 1
+
+# The relative path to the runfolder where we put our data for local processing. 
+LOCAL_PROCESSING_PATH: ./Local_Processing/ 
+
 # The host on which to archive the runfolder
 ARCHIVE_HOST: milou-b.uppmax.uu.se
 

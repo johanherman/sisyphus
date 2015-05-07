@@ -59,9 +59,14 @@ Also upload the entire MiSeq runfolder to a subfolder in the runfolder on Uppmax
 
 Proceed with the data processing, even though one or multiple QC criteria have failed.
 
-=item -noUppmaxProcessing
+=item -noPostProcessing
 
-Will not upload any data to Uppmax or start any jobs on Uppmax
+Will not upload any data to UPPMAX nor start any post processing jobs (neither on UPPMAX nor locally).
+
+=item -localPostProcessing
+
+Will not upload any data to UPPMAX or start any jobs on UPPMAX. Will run the post processing jobs 
+locally instead.
 
 =item -noSeqStatSync
 
@@ -105,7 +110,8 @@ my $miseq = 0;
 my $exec = 1;
 my $wait = 1;
 my $ignoreQCResult = 0;
-my $noUppmaxProcessing = 0;
+my $noPostProcessing = 0;
+my $localPostProcessing = 0; 
 my $noSeqStatSync = 0;
 my $ngi = 0;
 my $force = 0;
@@ -122,7 +128,8 @@ GetOptions('help|?'=>\$help,
 	   'exec!' => \$exec,
 	   'wait!' => \$wait,
 	   'ignoreQCResult!' => \$ignoreQCResult,
-	   'noUppmaxProcessing!' => \$noUppmaxProcessing,
+	   'noPostProcessing!' => \$noPostProcessing,
+           'localPostProcessing!' => \$localPostProcessing, 
 	   'noSeqStatSync!' => \$noSeqStatSync,
 	   'force!' => \$force,
 	   'debug' => \$debug,
@@ -235,6 +242,9 @@ if(defined $config->{ANALYSIS_PATH}){
 if(defined($config->{NGI_PROCESSING})) {
     $ngi = $config->{NGI_PROCESSING};
 }
+if(defined($config->{LOCAL_PROCESSING}) || $localPostProcessing) {
+   $localPath = abs_path($rfPath . '/' . $config->{LOCAL_PROCESSING_PATH});
+}
 
 # Strip trailing slashes from paths
 $rPath =~ s:/*$::;
@@ -267,7 +277,7 @@ if($debug){
     print "\$oPath => $oPath\n";
     print "\$rfName => $rfName\n";
     print "\$anPath => $anPath\n";
-
+    print "\$localPath => $localPath\n"; 
 };
 
 print STDERR "All set. Checking for runfolder completion!\n\n";
@@ -546,7 +556,7 @@ my $rnd = time() . '.' . rand(1);
 print $scriptFh <<EOF;
 
 # Copy $FindBin::Bin/ directory to the runfolder
-# Both for archiving and usage at UPPMAX
+# Both for archiving and usage at UPPMAX or locally
 if [ -e $rfPath/Sisyphus ]; then
     rm -rf $rfPath/Sisyphus
 fi
@@ -576,6 +586,7 @@ if (defined $config->{MAIL}) {
     print $scriptFh <<EOF;
 echo Generating quick report for $config->{MAIL}
 quickReport.pl -runfolder $rfPath -mail $config->{MAIL} -sender $config->{SENDER}
+
 #Check if quick report could be generated.
 check_errs \$? "Could not generate quickReport"
 
@@ -583,19 +594,20 @@ qcValidateRun.pl -runfolder $rfPath -mail $config->{MAIL} -sender $config->{SEND
 
 EOF
 
-unless($ignoreQCResult) {
-    print $scriptFh <<EOF;
+    unless($ignoreQCResult) {
+        print $scriptFh <<EOF;
 check_errs \$? "FAILED QC"
 EOF
-}
+    }
 }
 
-unless($noUppmaxProcessing) {
+unless($noPostProcessing || $localPostProcessing) {
 print $scriptFh <<EOF;
 
 #Transfer data to remote host
 transferFilesToRemoteHost "$rfRoot" "$rfName" "rsync.log" "rsync-real.log" "$targetPath" "hiseq.rsync"
 
+## TODO: Investigate whether or not we need these MD5 sums. 
 #Calculate MD5 sum for transferred files
 createMD5SumFromLogFile "$rfName" "$rfPath" "$rfRoot" "rsync.log" "checksums.md5"
 
@@ -608,37 +620,185 @@ setRemotePermission "$rHost" "$rPath" "$rfName"
 EOF
 }
 
+## TODO: Investigate whether or not this should be skipped or calculated for us. 
 unless($noSeqStatSync) {
 print $scriptFh <<EOF;
 
 rsyncSeqSummaries "$rfRoot" "$rfName" "$summaryPath" "rsync.summary.log" "summary.rsync"
 
 EOF
-
 }
-unless($noUppmaxProcessing) {
-# The rest of the processing is done at UPPMAX
-print $scriptFh <<EOF;
+
+unless($noPostProcessing) {
+# The rest of the processing is done at UPPMAX or locally
+    unless($localPostProcessing) {
+        print $scriptFh <<EOF;
+
 #Start cluster jobs on remote host
-startClusterJobs "$rfRoot" "$rHost" "$rPath" "$rfName" "$debugFlag";
+startClusterJobs "$rfRoot" "$rHost" "$rPath" "$rfName" "$debugFlag"
+
+EOF
+    } else {
+        my $numLanes = $sisyphus->laneCount();
+        my $localRfPath = "$rfPath/local_run/$rfName";
+        print $scriptFh <<EOF;
+
+# Start processing jobs on local host 
+
+# TODO: Remove the copied files afterwards. 
+mkdir -p $localRfPath
+transferFilesToRemoteHost "$rfRoot" "$rfName" "rsync.log" "rsync-real.log" "$localRfPath" "hiseq.rsync"
+
+echo -n "Starting fastqStats.pl for all lanes in parallell... "
+seq $numLanes | xargs -n 1 -P 0 -I __laneNr__ $FindBin::Bin/fastqStats.pl -runfolder $localRfPath -lane __laneNr__ $debugFlag
+check_errs \$? "FAILED"
+echo OK
 
 EOF
 
-}
+    # TODO make better use of some config values instead. 
+    my $local_sampleSheet = $sisyphus->readSampleSheet();
+    my $local_oPath = "$localRfPath/Projects";
+    $local_oPath =~ s:/*$::;
+    my $skipLanes = [];
+    my $skip = ""; 
+    if(defined $config->{SKIP_LANES}){
+        $skipLanes = $config->{SKIP_LANES};
+    }
 
+    foreach my $lane (@{$skipLanes}) {
+        $skip .= " -skip $lane";
+    }
+
+    my $projs = join "\\n", keys %{$local_sampleSheet};
+
+    # TODO: Instead of $FindBin::Bin use $rfPath/Sisyphus/
+
+    print $scriptFh <<EOF; 
+
+echo -n "Starting extractProject.pl for all projects in parallell... "
+echo -e "$projs" | xargs -n 1 -P 0 -I __proj__ $FindBin::Bin/extractProject.pl -runfolder $localRfPath -project __proj__ -outdir $local_oPath/__proj__ $skip $debugFlag  
+check_errs \$? "FAILED"
+echo OK
+
+echo -n "Starting generateReport.pl for a global report... "
+$FindBin::Bin/generateReport.pl -runfolder $localRfPath $debugFlag
+check_errs \$? "FAILED"
+echo OK 
+
+EOF
+
+    # TODO make better use of some config values instead.
+    # aPath = archive path. sätts i dagsläget i sisyphus.yml till
+    # /gulo/proj_nobackup/a2009002/private/archive-tmp
+
+    my $iPath = "/ssUppnexZone/proj/$uProj";
+    $aPath = "/tmp/archive/test/";
+
+    if(defined $config->{SWESTORE_PATH}){
+        $iPath = $config->{SWESTORE_PATH};
+    }
+
+    # Add year and month to outdir if not already included
+    # TODO this could perhaps be removed; is done in the archive scripts as well. 
+    unless($aPath =~ m/201\d-[0123]\d$/){
+        if($sisyphus->RUNFOLDER =~ m/(1\d)([01]\d)[0123]\d_/){
+        $aPath .= "/20$1-$2";
+        }
+    }
+    unless($iPath =~ m/201\d-[0123]\d$/){
+        if($sisyphus->RUNFOLDER =~ m/(1\d)([01]\d)[0123]\d_/){
+        $iPath .= "/20$1-$2";
+        }
+    }
+
+    print $scriptFh <<EOF; 
+
+# Start uploading data directly to Swestore
+
+echo -n "Starting to create archive of the runfolder... "
+$FindBin::Bin/archive.pl -runfolder $localRfPath -outdir '$aPath' $debugFlag
+check_errs \$? "FAILED"
+echo OK
+
+echo -n "Starting to upload archive to Swestore... "
+$FindBin::Bin/archive2swestore.pl -runfolder $aPath -config $rfPath/sisyphus.yml -noSlurm $debugFlag
+check_errs \$? "FAILED"
+echo OK 
+
+# FIXME: Use variables instead. 
+START_OK=1
+SLEEP=300
+until [ \$START_OK = 0 ]; do
+    echo -n "Notifying UPPMAX to verify upload in 4 days."
+    ssh milou-b.uppmax.uu.se "mkdir /proj/a2009002/to_verify/queue/$rfName"
+    START_OK=\$?
+    if [ \$START_OK -gt 0 ]; then
+       echo "FAILED will retry in \$SLEEP seconds"
+       sleep \$SLEEP
+    fi
+done
+check_errs \$START_OK "FAILED"
+echo OK
+
+#copyFolderToRemoteTarget "/proj/a2009002/to_verify/queue/$rfName" "$rfPath/MD5/checksums.ngi.md5" "$rfName"
+
+
+# TODO: skapa MD5-summorna också. 
+
+$pathToCopy = Sisyphus-path + MD5-path
+
+# And copy them to the target
+RSYNC_OK=1
+SLEEP=300
+until [ \$RSYNC_OK = 0 ]; do
+    echo -n "Copy folders to \$targetPath/\$runfolderName/  "
+    rsync -vrltp --chmod=Dg+sx,ug+w,o-rwx \$pathToCopy milou-b:/proj/a2009002/to_verify/queue/$rfName
+    RSYNC_OK=\$?
+    if [ \$RSYNC_OK -gt 0 ]; then
+       echo "FAILED will retry in \$SLEEP seconds"
+       sleep \$SLEEP
+    fi
+done
+
+check_errs \$RSYNC_OK "FAILED"
+echo OK
+
+#echo "Will now sleep for 4 days (96 hours) until verifying upload."
+#TOTAL_SLEEP=0
+#SLEEP_INT=6h
+#until [ \$TOTAL_SLEEP = 96 ]; do
+#    echo -n "Hours slept so far: "
+#    sleep \$SLEEP_INT
+#    TOTAL_SLEEP=\$((TOTAL_SLEEP + \$SLEEP_INT))
+#    echo -n "\$TOTAL_SLEEP "
+#done
+
+#echo "Finished sleeping!"
+
+#echo -n "Starting archive2swetore.pl for verifying uploaded copy to Swestore... "
+#$FindBin::Bin/archive2swestore.pl -runfolder $aPath -config $rfPath/sisyphus.yml -verifyonly $debugFlag
+#check_errs \$? "FAILED"
+#echo OK 
+
+EOF
+
+    } # closes the localProcessing {
+} # closes the noUppmax {
+ 
 if($ngi) {
-unless(-e "$rfPath/Demultiplexing") {
-    print $scriptFh <<EOF;
+    unless(-e "$rfPath/Demultiplexing") {
+        print $scriptFh <<EOF;
 # Create Demultiplexing softlink
-cd $rfPath;
+cd $rfPath
 check_errs \$? "Failed to cd to $rfPath"
 
-
-ln -s Unaligned Demultiplexing;
+ln -s Unaligned Demultiplexing
 EOF
-}
+    }
 
-print $scriptFh <<EOF;
+    unless($localPostProcessing) {
+        print $scriptFh <<EOF;
 #Transfer data to remote host
 transferFilesToRemoteHost "$rfRoot" "$rfName" "rsync.ngi.log" "rsync-real.ngi.log" "$ngiTargetPath" "ngi.rsync"
 
@@ -652,15 +812,16 @@ copyFolderToRemoteTarget "$ngiTargetPath" "$rfPath/MD5/checksums.ngi.md5" "$rfNa
 setRemotePermission "$ngiRemHost" "$ngiRemPath" "$rfName"
 
 EOF
+    }
 }
 
-print $scriptFh <<EOF;
-
-} # End bracket for main function
+#} # End bracket for main function
 
 ########################################################################
 #           Helper functions
 ########################################################################
+
+print $scriptFh <<EOF;
 
 processMiSeqAnalysisFolder() {
     runfolderPath="";
@@ -738,6 +899,9 @@ processMiSeqAnalysisFolder() {
   
     fi
 }
+
+
+ 
 
 startClusterJobs() {
     runfolderRoot="";
@@ -821,6 +985,8 @@ startClusterJobs() {
     check_errs \$? "FAILED to start aeacus-reports.pl in \$remotePath/\$runfolderName at \$remoteHost";
 
 }
+
+
 
 
 rsyncSeqSummaries () {

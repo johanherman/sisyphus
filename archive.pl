@@ -631,26 +631,27 @@ sub addFile{
   my $dirMask = shift;
 
   # Compress files if necessary, skip compressing the Sisyphus code, as well as reports and checksums and README in the project dir
-  if($file =~ m/\.(png|jpg|jpeg|zip)$/i ||
-     $file =~ m/(summary)?report.(htm|xm|xs)l/i ||
+  if($file =~ m/\.(png|jpg|jpeg|zip)$/i || 
+     $file =~ m/(summary)?report.(htm|xm|xs)l/i || 
      "$inDir/$file"=~m:Projects/.*/(checksums|README|.*\.md5): ||
-     $inDir =~ m/\/Sisyphus/){
-    $checksums->{ORIGINAL}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
-    $checksums->{COMPRESSED}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
-  }elsif($file =~ m/\.(gz|bz2)$/i){
-    $checksums->{COMPRESSED}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
-    (my $original = $file) =~ s/\.(gz|bz2)$//i;
-    my $md5 = $sisyphus->getMd5("$inDir/$original", -skipMissing=>1);
-    if(defined $md5){
-      $checksums->{ORIGINAL}->{"$inDir/$original"} = $md5;
-    }else{
-      $checksums->{ORIGINAL}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
-    }
-  }elsif(! -l "$inDir/$file"){ # Do not checksum symlinks
-    $checksums->{ORIGINAL}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
-    $file = $sisyphus->gzip("$inDir/$file"); # Gzip returns abs path
-    $file =~ s:^$inDir/::; # Make $file relative again
-    $checksums->{COMPRESSED}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
+     $inDir =~ m/\/Sisyphus/) {
+        $checksums->{ORIGINAL}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
+        $checksums->{COMPRESSED}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
+  } elsif($file =~ m/\.(gz|bz2)$/i) {
+        $checksums->{COMPRESSED}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
+        (my $original = $file) =~ s/\.(gz|bz2)$//i;
+        my $md5 = $sisyphus->getMd5("$inDir/$original", -skipMissing=>1);
+    
+        if(defined $md5) {
+          $checksums->{ORIGINAL}->{"$inDir/$original"} = $md5;
+        }else{
+          $checksums->{ORIGINAL}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
+        }
+  } elsif(! -l "$inDir/$file") { # Do not checksum symlinks
+        $checksums->{ORIGINAL}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
+        $file = $sisyphus->gzip("$inDir/$file"); # Gzip returns abs path
+        $file =~ s:^$inDir/::; # Make $file relative again
+        $checksums->{COMPRESSED}->{"$inDir/$file"} = $sisyphus->getMd5("$inDir/$file");
   }
 
   my $path = "$inDir/$file";

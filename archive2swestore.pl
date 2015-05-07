@@ -59,6 +59,10 @@ Slurm account to use if submitting batch jobs
 
 Skip uploading and just verify the archive, assuming it is already at SweStore.
 
+=item -noSlurm
+
+Don't submit a SLURM job. Suitable e.g. when calling this script twice manually instead. 
+
 =item -noemail
 
 Skip slurm email notifications
@@ -93,7 +97,7 @@ If any file fails to verify after three tries, the script will stop and exit wit
 my $scriptCommand = join(" ", "$FindBin::Bin/$FindBin::RealScript", @ARGV);
 
 # Parse options
-my($help,$man) = (0,0);
+my($help,$man,$noSlurm) = (0,0,0);
 my($srcDir,$tmpPath,$iPath,$verifyOnly,$proj,$config,$noemail) = (undef,undef,undef,0,undef,undef,undef);
 our($debug) = 0;
 
@@ -106,6 +110,7 @@ GetOptions('help|?'=>\$help,
 	   'ipath=s'=>\$iPath,
 	   'proj' =>\$proj,
 	   'noemail' =>\$noemail,
+     'noSlurm' => \$noSlurm,
 	   'debug' => \$debug,
 	  ) or pod2usage(-verbose => 0);
 pod2usage(-verbose => 1)  if ($help);
@@ -179,55 +184,56 @@ unless($verifyOnly){
     my @time = localtime(time); # ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst)
     my $month = ($time[5] + 1900) . '-' . sprintf('%02d', $time[4]);
     if($srcDir =~ m/(1\d)([01]\d)[0123]\d_/){
-	$month = "20$1-$2";
+	     $month = "20$1-$2";
     }
     system('imkdir', '-p', "$iPath/$month");
     # Do the actual upload, try three times before giving up
     my $tries = 0;
     my $failed = 1;
     until($tries > 3 || $failed==0){
-	$tries++;
-	$failed = system("irsync", "-v", "-r", $srcDir, "i:$iPath/$month/$rfName");
+	     $tries++;
+	     $failed = system("irsync", "-v", "-r", $srcDir, "i:$iPath/$month/$rfName");
     }
     # Die if we failed after multiple attempts
     die "Failed to upload to SweStore" if($failed);
 
-    # Do not verify immediately, wait for the files
-    # to migrate from local cache to Swestore
-    my $scriptDir = "$srcDir/../../ArchiveScripts";
-    unless(-e $scriptDir){
-	mkdir($scriptDir)
-	    or die "Failed to create '$scriptDir': $!";
-	mkdir("$scriptDir/logs")
-	    or die "Failed to create '$scriptDir/logs': $!";
+    unless($noSlurm) {
+      # Do not verify immediately, wait for the files
+      # to migrate from local cache to Swestore
+      my $scriptDir = "$srcDir/../../ArchiveScripts";
+      unless(-e $scriptDir){
+  	     mkdir($scriptDir)
+  	  or die "Failed to create '$scriptDir': $!";
+  	     mkdir("$scriptDir/logs")
+  	  or die "Failed to create '$scriptDir/logs': $!";
+      }
+
+      $scriptDir = abs_path($scriptDir);
+      my $execPath = abs_path("$srcDir/..");
+      my @sTime = localtime(time() + (3600*24*4));
+      $sTime[4]++; # Months are zero based from localtime
+      my $sTime = sprintf('%02d:%02d %02d/%02d/%02d', $sTime[2],$sTime[1],$sTime[4],$sTime[3], ($sTime[5] - 100));
+
+      my $job = Molmed::Sisyphus::Uppmax::SlurmJob->new(
+  	    DEBUG=>$debug,         # bool
+  	    SCRIPTDIR=>$scriptDir, # Directory for writing the script
+  	    EXECDIR=>$execPath,    # Directory from which to run the script
+  	    NAME=>"SwSt-$rfName",  # Name of job, also used in script name
+  	    PROJECT=>$proj,        # project for resource allocation
+  	    TIME=>"1-00:00:00",    # Maximum runtime, formatted as d-hh:mm:ss
+  	    STARTTIME=>"$sTime",   # Defer job until
+  	    PARTITION=>'core',     # core or node (or devel));
+        MAIL_USER=>$email, 
+        MAIL_TYPE=>'END', 
+  	  );
+      $job->addCommand("$scriptCommand --verifyOnly -ipath '$iPath/$month'", "archive2swestore on $rfName FAILED");
+      print STDERR "Submitting SwSt-$rfName starting at $sTime\t";
+      $job->submit();
+      print STDERR $job->jobId(), "\n";
+
+      # Now exit and let the verification be done later
+      exit;
     }
-
-   $scriptDir = abs_path($scriptDir);
-    my $execPath = abs_path("$srcDir/..");
-    my @sTime = localtime(time() + (3600*24*4));
-    $sTime[4]++; # Months are zero based from localtime
-    my $sTime = sprintf('%02d:%02d %02d/%02d/%02d', $sTime[2],$sTime[1],$sTime[4],$sTime[3], ($sTime[5] - 100));
-
-    my $job =
-	Molmed::Sisyphus::Uppmax::SlurmJob->new(
-	    DEBUG=>$debug,         # bool
-	    SCRIPTDIR=>$scriptDir, # Directory for writing the script
-	    EXECDIR=>$execPath,    # Directory from which to run the script
-	    NAME=>"SwSt-$rfName",  # Name of job, also used in script name
-	    PROJECT=>$proj,        # project for resource allocation
-	    TIME=>"1-00:00:00",    # Maximum runtime, formatted as d-hh:mm:ss
-	    STARTTIME=>"$sTime",   # Defer job until
-	    PARTITION=>'core',     # core or node (or devel));
-      MAIL_USER=>$email, 
-      MAIL_TYPE=>'END', 
-	);
-    $job->addCommand("$scriptCommand --verifyOnly -ipath '$iPath/$month'", "archive2swestore on $rfName FAILED");
-    print STDERR "Submitting SwSt-$rfName starting at $sTime\t";
-    $job->submit();
-    print STDERR $job->jobId(), "\n";
-
-    # Now exit and let the verification be done later
-    exit;
 }
 
 # Now verify the files in the uploaded archive
@@ -312,66 +318,70 @@ sub putFile{
   print STDERR "Trying to upload $path\n";
 
   my $srcPath = abs_path(dirname($srcDir) . "/$path");
+
   if(-e $srcPath){
-      if(system('irm','-f', "$iPath/$path") ==0 && system('iput', '-f', "$srcPath", "$iPath/$path")==0){
-	  return pushFile("$iPath/$path", 0);
-      }elsif( system('iput', '-f', "$srcPath", "$iPath/$path")==0 ){
-	  return pushFile("$iPath/$path", 0);
-      }elsif($i<3){
-	  return(putFile($i+1, $srcDir, $path, $iPath));
-      }
+    if(system('irm','-f', "$iPath/$path") ==0 && system('iput', '-f', "$srcPath", "$iPath/$path")==0){
+	     return pushFile("$iPath/$path", 0);
+    }elsif( system('iput', '-f', "$srcPath", "$iPath/$path")==0 ){
+	     return pushFile("$iPath/$path", 0);
+    }elsif($i<3){
+	     return(putFile($i+1, $srcDir, $path, $iPath));
+    }
   }else{
-      die "$srcPath does not exists for re-upload";
+    die "$srcPath does not exists for re-upload";
   }
+
   print STDERR "Failed to upload $iPath/$path\n";
   return 0;
 }
 
 sub pushFile{
-    my $file = shift;
-    my $i=shift;
+  my $file = shift;
+  my $i=shift;
 
-    # Push the file to remote Swestore
-    if(system('irepl', '-R', 'swestoreArchResc', $file)==0){
-	return 1;
-    }elsif($i<3){
-	return(pushFile($file, $i+1));
-    }
-    print STDERR "Failed to push $file to remote\n";
-    return 0;
+  # Push the file to remote Swestore
+  if(system('irepl', '-R', 'swestoreArchResc', $file)==0){
+    return 1;
+  }elsif($i<3){
+    return(pushFile($file, $i+1));
+  }
+  
+  print STDERR "Failed to push $file to remote\n";
+  return 0;
 }
 
 sub removeLocalCache{
-    my $file = shift;
-    my $i=shift;
+  my $file = shift;
+  my $i=shift;
 
-    my @list = split(/\n/, `ils -l $file`);
+  # FIXME: We got to use isysmeta when running locally because -l doesn't work. 
+  my @list = split(/\n/, `ils -l $file`);
 
-    unless(grep /swestoreArchResc/, @list){
-	unless(pushFile($file, 0)){
-	    return 0;
-	}
+  unless(grep /swestoreArchResc/, @list) {
+    unless(pushFile($file, 0)) {
+      return 0;
     }
+  }
 
-    my $retval = 1;
-    foreach my $path (@list){
-	$path =~ s/^\s+//;
-	my @p = split /\s+/, $path;
+  my $retval = 1;
+  foreach my $path (@list){
+     $path =~ s/^\s+//;
+     my @p = split /\s+/, $path;
 
-	# Remove local cache copies
-	if($p[2] eq 'swestoreArchCacheRes'){
-	    if(system('itrim', '-S', 'swestoreArchCacheRes', '-N', 1, '-n', $p[1], $file)==0){
-		$retval=1;
-	    }elsif($i<3){
-		return(removeLocalCache($file, $i+1));
-	    }else{
-		print STDERR "Failed to remove $file from cache\n";
-		$retval=0;
-		last;
-	    }
-	}
+     # Remove local cache copies
+     if($p[2] eq 'swestoreArchCacheRes'){
+       if(system('itrim', '-S', 'swestoreArchCacheRes', '-N', 1, '-n', $p[1], $file)==0){
+	        $retval=1;
+       }elsif($i<3){
+	        return(removeLocalCache($file, $i+1));
+       }else{
+	        print STDERR "Failed to remove $file from cache\n";
+	        $retval=0;
+	        last;
+       }
+     }
     }
-    return $retval;
+  return $retval;
 }
 
 sub getFile{

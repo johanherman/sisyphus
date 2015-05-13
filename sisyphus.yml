@@ -2,10 +2,12 @@
 
 
 # Address for quick report
-MAIL: medsci-molmed-bioinfo@googlegroups.com
+#MAIL: medsci-molmed-bioinfo@googlegroups.com
+MAIL: johan.hermansson@gmail.com
 
 # Sender address for quick report
-SENDER: seq@medsci.uu.se
+#SENDER: seq@medsci.uu.se
+SENDER: johan.hermansson@gmail.com
 
 # CASAVA binaries
 CASAVA: /opt/CASAVA/1.8.4/bin/
@@ -58,7 +60,10 @@ NGI_PROCESSING: 0
 LOCAL_PROCESSING: 1
 
 # The relative path to the runfolder where we put our data for local processing. 
-LOCAL_PROCESSING_PATH: ./Local_Processing/ 
+LOCAL_PROCESSING_PATH: /data/scratch/Local_Processing/ 
+
+# The relative path to the runfolder where we put our archive data for uploading to Swestore 
+LOCAL_ARCHIVE_PATH: /data/scratch/Local_Archive/
 
 # The host on which to archive the runfolder
 ARCHIVE_HOST: milou-b.uppmax.uu.se
@@ -71,7 +76,7 @@ ARCHIVE_HOST: milou-b.uppmax.uu.se
 ARCHIVE_PATH: /gulo/proj_nobackup/a2009002/private/archive-tmp
 
 # The iRODS path to SweStore archive
-SWESTORE_PATH: /ssUppnexZone/proj/a2009002
+SWESTORE_PATH: /ssUppnexZone/proj/a2009002/test-johanhe/
 
 # Root dir of temporary directory to use
 # (eg when verifying the archive copies)

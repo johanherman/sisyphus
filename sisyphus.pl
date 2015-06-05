@@ -795,7 +795,7 @@ mailStatus "Ready to deliver $rfName" "All local processing and data archivation
 EOF
 
     } # closes the localProcessing {
-} # closes the noUppmax {
+} # closes the noPostProcessing {
  
 if($ngi && !$localPostProcessing) {
     unless(-e "$rfPath/Demultiplexing") {
